@@ -1,0 +1,108 @@
+#!/bin/bash
+#
+# ptouch-sync-ready-media — make the print dialog offer ONLY the tape that is
+# physically loaded, by reading the cassette from the printer itself.
+#
+#   ptouch-sync-ready-media [--container NAME] [--printer NAME] [--host HOST]
+#
+# WHY THIS EXISTS
+# ---------------
+# The printer application trusts whatever the print dialog says. Nothing stops
+# a 24mm layout going onto 9mm tape. That is the failure that burned half a
+# cartridge on 2026-05-08; the container
+# route reintroduced it, because the driver never asks the printer what is in it.
+#
+# The printer does know, and publishes it unauthenticated on its own status page
+# — the same reading `ptouch-label --probe` already relies on. This syncs that
+# reading into the application's "ready media", so the dialog stops offering
+# sizes that are not loaded. A guard you cannot select past beats a warning.
+#
+# Run it on a timer and after any cassette change.
+#
+# THE hs- NAMES ARE NOT A MISTAKE
+# -------------------------------
+# For 6/9/12/18/24mm the only surviving media names are the heat-shrink ones.
+# The driver's own PPD carries all seven TZ tape sizes, but TZ and heat-shrink
+# differ by exactly one point at each nominal width (9mm tape is 26pt, 9mm tube
+# is 25pt), and the IPP translation rounds both to the same nominal millimetre,
+# treats them as duplicates and keeps one. Heat-shrink wins. Only tz-4 and
+# tz-36 survive, having no tubing counterpart.
+#
+# So the mapping below deliberately points tape widths at hs- names for those
+# five sizes. The geometry is 0.35mm narrow; the alternative is offering nothing
+# at all for the widths people actually use. Revisit if the upstream collision
+# is fixed.
+
+set -uo pipefail
+
+CONTAINER="${PTOUCH_APP_CONTAINER:-ptouch-printer-app}"
+PRINTER="${PTOUCH_APP_PRINTER:-label-printer}"
+HOST="${PTOUCH_APP_HOST:-}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --container) CONTAINER="$2"; shift 2 ;;
+    --printer)   PRINTER="$2";   shift 2 ;;
+    --host)      HOST="$2";      shift 2 ;;
+    -h|--help)   sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+die() { echo "ptouch-sync-ready-media: $*" >&2; exit 1; }
+
+[ -n "$HOST" ] || die "no printer address. Pass --host <hostname-or-ip> or set PTOUCH_APP_HOST."
+# Hostname, IPv4, or [IPv6] with optional :port. Anything else is refused,
+# because the value is used to build a URL.
+HOST_RE='^[][A-Za-z0-9.:-]+$'
+[[ $HOST =~ $HOST_RE ]] || die "refusing unusual --host value: $HOST"
+
+# --- read the cassette from the printer ------------------------------------
+# Unauthenticated; the same page and pattern ptouch-label's probe uses. The
+# CSRF-bearing admin pages need a login, this one does not.
+#
+# The read happens INSIDE the container, deliberately. It is the process that
+# has to reach the printer to print anyway, so asking it to also do the reading
+# means one network path instead of two, and the script behaves identically
+# wherever the container runs. On macOS it also sidesteps Local Network
+# privacy, which gates host binaries per executable path but not containers.
+# The container ships python3 but no curl.
+LOADED="$(docker exec -e PTOUCH_SYNC_HOST="$HOST" -- "$CONTAINER" python3 -c '
+import re, sys, urllib.request
+url = "http://" + __import__("os").environ["PTOUCH_SYNC_HOST"] + "/general/status.html"
+try:
+    body = urllib.request.urlopen(url, timeout=10).read().decode("utf-8", "replace")
+except Exception as exc:
+    print("ERR " + str(exc), file=sys.stderr); sys.exit(1)
+m = re.search(r"Media(?:&#32;|\s)?Type</dt>\s*<dd>(\d+(?:\.\d+)?)\s*mm", body, re.I)
+print(m.group(1) if m else "")
+' 2>/dev/null)"
+
+[ -n "$LOADED" ] || die "could not read the loaded tape from ${HOST} — printer asleep, off, or unreachable from the container. Refusing to guess; ready media left unchanged."
+
+# --- map tape width to the media name the application actually exposes ------
+case "$LOADED" in
+  3.5|4) MEDIA="om_tz-4_3.53x100.19mm"   ;;
+  6)     MEDIA="om_hs-6_5.64x100.19mm"   ;;
+  9)     MEDIA="om_hs-9_8.82x100.19mm"   ;;
+  12)    MEDIA="om_hs-12_11.64x100.19mm" ;;
+  18)    MEDIA="om_hs-18_17.64x100.19mm" ;;
+  24)    MEDIA="om_hs-24_23.64x100.19mm" ;;
+  36)    MEDIA="om_tz-36_35.98x100.19mm" ;;
+  *)     die "unrecognised tape width '${LOADED}mm' — refusing to guess" ;;
+esac
+
+CURRENT="$(docker exec -- "$CONTAINER" ghostscript-printer-app options -d "$PRINTER" 2>/dev/null \
+           | awk '/-o media=.*\(default\)/{print $2}' | sed 's/^media=//')"
+
+if [ "$CURRENT" = "$MEDIA" ]; then
+  echo "ready media already matches the loaded ${LOADED}mm cassette (${MEDIA})"
+  exit 0
+fi
+
+docker exec -- "$CONTAINER" ghostscript-printer-app modify -d "$PRINTER" \
+  -o "media-ready=${MEDIA}" -o "media-default=${MEDIA}" 2>/dev/null \
+  || die "failed to set ready media on ${PRINTER} in ${CONTAINER}"
+
+echo "loaded cassette: ${LOADED}mm  ->  ready media set to ${MEDIA}"
+[ -n "$CURRENT" ] && echo "  (was ${CURRENT})"

@@ -1,0 +1,54 @@
+*PPD-Adobe: "4.3"
+*FormatVersion: "4.3"
+*FileVersion: "2.3"
+*LanguageVersion: English
+*LanguageEncoding: ISOLatin1
+*PSVersion: "(3010.000) 0"
+*LanguageLevel: "3"
+*FileSystem: False
+*PCFileName: "ippeve.ppd"
+*Manufacturer: "Unknown"
+*ModelName: "Printer"
+*Product: "(Printer)"
+*NickName: "Printer - IPP Everywhere"
+*ShortNickName: "Printer - IPP Everywhere"
+*ColorDevice: False
+*cupsVersion: 2.3
+*cupsSNMPSupplies: False
+*cupsLanguages: "en_US"
+*cupsFilter2: "application/vnd.cups-pdf application/pdf 10 -"
+*OpenUI *PageSize: PickOne
+*OrderDependency: 10 AnySetup *PageSize
+*DefaultPageSize: 300x36mm.Borderless
+*PageSize 300x36mm.Borderless/Label tape (auto-scale to loaded cartridge) - 300 x 36 mm: "<</PageSize[850.393700787402 102.047244094488]>>setpagedevice"
+*CloseUI: *PageSize
+*OpenUI *PageRegion: PickOne
+*OrderDependency: 10 AnySetup *PageRegion
+*DefaultPageRegion: 300x36mm.Borderless
+*PageRegion 300x36mm.Borderless/Label tape (auto-scale to loaded cartridge) - 300 x 36 mm: "<</PageSize[850.393700787402 102.047244094488]>>setpagedevice"
+*CloseUI: *PageRegion
+*DefaultImageableArea: 300x36mm.Borderless
+*DefaultPaperDimension: 300x36mm.Borderless
+*ImageableArea 300x36mm.Borderless/Label tape (auto-scale to loaded cartridge) - 300 x 36 mm: "0 0 850.393700787402 102.047244094488"
+*PaperDimension 300x36mm.Borderless/Label tape (auto-scale to loaded cartridge) - 300 x 36 mm: "850.393700787402 102.047244094488"
+*OpenUI *ColorModel: PickOne
+*OrderDependency: 10 AnySetup *ColorModel
+*en_US.Translation ColorModel/Color Mode: ""
+*ColorModel Gray: "<</cupsColorSpace 18/cupsBitsPerColor 8/cupsColorOrder 0/cupsCompression 0>>setpagedevice"
+*en_US.ColorModel Gray/Grayscale: ""
+*DefaultColorModel: Gray
+*CloseUI: *ColorModel
+*DefaultResolution: 360dpi
+*OpenUI *cupsPrintQuality: PickOne
+*OrderDependency: 10 AnySetup *cupsPrintQuality
+*en_US.Translation cupsPrintQuality/Print Quality: ""
+*DefaultcupsPrintQuality: Normal
+*cupsPrintQuality Draft: "<</HWResolution[360 180]>>setpagedevice"
+*en_US.cupsPrintQuality Draft/Draft: ""
+*cupsPrintQuality Normal: "<</HWResolution[360 360]>>setpagedevice"
+*en_US.cupsPrintQuality Normal/Normal: ""
+*CloseUI: *cupsPrintQuality
+*en_US.Translation PageSize/Label size: ""
+*en_US.PageSize 300x36mm.Borderless/Label tape (auto-scale to loaded cartridge) - 300 x 36 mm: ""
+*en_US.Translation PageRegion/Label size: ""
+*en_US.PageRegion 300x36mm.Borderless/Label tape (auto-scale to loaded cartridge) - 300 x 36 mm: ""

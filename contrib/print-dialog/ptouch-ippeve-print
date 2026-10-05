@@ -1,0 +1,145 @@
+#!/bin/bash
+#
+# ptouch-ippeve-print — the `-c` command for an ippeveprinter instance that
+# presents a Brother P-touch as a driverless IPP Everywhere printer, so a tape
+# width can be chosen as a paper size in any macOS print dialog.
+#
+# Invoked by ippeveprinter once per job:
+#     ippeveprinter -a ptouch-ippeve.conf -c ptouch-ippeve-print "Label Printer"
+#
+# It receives the document as $1 and the job's IPP attributes as IPP_* env vars.
+#
+# WHY THE TAPE WIDTH IS DERIVED FROM THE PAGE, NOT FROM $IPP_MEDIA
+# ----------------------------------------------------------------
+# It would be natural to read $IPP_MEDIA. That does not work. CUPS and macOS
+# send the selected media as a `media-col` COLLECTION rather than the `media`
+# keyword, and ippeveprinter does not serialise collection-valued attributes
+# into the environment — it creates IPP_MEDIA_COL and leaves it empty, while
+# IPP_MEDIA is empty because `media` was never sent. Verified on CUPS 2.4.19
+# and Apple 2.3.4; reported upstream as OpenPrinting/cups#1725.
+#
+# The page geometry carries the same information and is not affected, so the
+# width is taken from the PDF page instead. If the upstream bug is fixed,
+# $IPP_MEDIA becomes a usable cross-check but is still not needed.
+#
+# GROUND TRUTH IS THE PROBE, NOT THE SELECTION
+# --------------------------------------------
+# The width chosen in the print dialog is an intent. The tape physically in the
+# printer is a fact, and they disagree whenever someone swaps a cassette. This
+# script prints at the PROBED width and warns when the page implies a different
+# one, rather than rendering a 9mm-designed page onto 24mm tape. That follows
+# the same rule the ptouch-label skill enforces: an operator-stated width is
+# never authoritative, only the probe is.
+
+set -uo pipefail
+
+# Files this script creates are private to the user: job names and label text
+# must not be readable by other local accounts.
+umask 077
+
+# Untrusted input, so bound the work. CPU seconds per process and the largest
+# file any child may write (pdftoppm's PNG). macOS has no `timeout` and ignores
+# `ulimit -v`, so these are the limits that actually apply.
+ulimit -t 60 2>/dev/null || true
+ulimit -f 409600 2>/dev/null || true     # 512-byte blocks: 200 MB
+
+DOC="${1:-}"
+# Never a fixed name in /tmp: another local user could pre-create it as a
+# symlink into this user's files (security review 2026-10-05).
+STATE_DIR="${PTOUCH_IPPEVE_STATE:-$HOME/.local/state/ptouch-ippeve}"
+mkdir -p "$STATE_DIR"
+LOG="${PTOUCH_IPPEVE_LOG:-$STATE_DIR/ptouch-ippeve.log}"
+# Keep the log well under the ulimit -f cap below: start over past 10 MB.
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 10485760 ]; then : > "$LOG"; fi
+PTOUCH_LABEL="${PTOUCH_LABEL_BIN:-$(command -v ptouch-label || echo "$HOME/.local/bin/ptouch-label")}"
+MODEL="${PTOUCH_IPPEVE_MODEL:-PT-P950NW}"
+# Optional: a CUPS queue name to pass as --printer. Usually unnecessary; the
+# printer address and calibration come from ptouch-label's config file.
+PRINTER="${PTOUCH_IPPEVE_PRINTER:-}"
+PRINTER_ARGS=()
+[ -n "$PRINTER" ] && PRINTER_ARGS=(--printer "$PRINTER")
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$LOG"; }
+
+# Job attributes come from whoever sent the job, which is anyone on the LAN.
+# Strip control characters (newlines would forge log lines) and cap the length.
+clean() { printf '%s' "${1:-?}" | tr -d '\000-\037\177' | cut -c1-120; }
+
+log "=== job $(clean "${IPP_JOB_ID:-}") name=$(clean "${IPP_JOB_NAME:-}") type=$(clean "${CONTENT_TYPE:-}") doc=$(clean "$DOC")"
+
+[ -n "$DOC" ] && [ -f "$DOC" ] || { log "ERROR: no document supplied"; exit 1; }
+
+case "${CONTENT_TYPE:-}" in
+  application/pdf) ;;
+  *)
+    # Anything else means the conf's document-format-supported drifted. Fail
+    # loudly rather than feeding the printer bytes it cannot interpret.
+    log "ERROR: unsupported CONTENT_TYPE '$(clean "${CONTENT_TYPE:-none}")' — this command handles application/pdf only"
+    exit 1
+    ;;
+esac
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/ptouch-ippeve.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+# --- page geometry (logged only) ----------------------------------------
+# Since 2026-10-02 the printer offers ONE paper size, "Label tape (auto-scale
+# to loaded cartridge)", 300 x 36 mm: the tallest tape the PT-P950NW takes, so content
+# is always scaled DOWN onto whatever cassette is loaded, never up. There is no
+# width choice left to disagree with the cassette, so no mismatch check.
+# pdfinfo's "Page size" is the CropBox, but pdftoppm can render the MediaBox,
+# so a small CropBox over a huge MediaBox would slip past a check on "Page size"
+# alone. Take the largest width and height of every box on page 1, and render
+# with -cropbox below so what is checked is what is drawn.
+PAGE="$(pdfinfo -box -f 1 -l 1 "$DOC" 2>/dev/null | awk '
+  /^Page size:/ { w=$3; h=$5; if (w>W) W=w; if (h>H) H=h }
+  /^Page +1 +(MediaBox|CropBox|BleedBox|TrimBox|ArtBox):/ {
+    x=$(NF-1)-$(NF-3); y=$NF-$(NF-2); if (x<0) x=-x; if (y<0) y=-y
+    if (x>W) W=x; if (y>H) H=y }
+  /^(MediaBox|CropBox|BleedBox|TrimBox|ArtBox):/ {
+    x=$(NF-1)-$(NF-3); y=$NF-$(NF-2); if (x<0) x=-x; if (y<0) y=-y
+    if (x>W) W=x; if (y>H) H=y }
+  END { if (W>0 && H>0) printf "%.2f %.2f", W, H }')"
+log "page: ${PAGE:-unreadable} pt"
+
+# Refuse oversized pages before rasterising. The PDF comes from any LAN client,
+# and pdftoppm at 360 dpi turns a poster-sized page into gigabytes of pixels.
+# A label is long and short: at most ~1 m long, 36 mm tall. Allow slack on both
+# (long side 3000 pt ~ 1058 mm, short side 300 pt ~ 106 mm), which caps a job at
+# ~15 Mpx at 360 dpi.
+MAX_LONG_PT=3000
+MAX_SHORT_PT=300
+if ! [[ "$PAGE" =~ ^[0-9]+(\.[0-9]+)?\ [0-9]+(\.[0-9]+)?$ ]] || ! awk -v p="$PAGE" -v L="$MAX_LONG_PT" -v S="$MAX_SHORT_PT" 'BEGIN{split(p,a," "); lo=(a[1]>a[2])?a[1]:a[2]; sh=(a[1]>a[2])?a[2]:a[1]; exit !(sh>0 && lo<=L && sh<=S)}'; then
+  log "ERROR: page '${PAGE:-unreadable}' pt is not label-shaped (max ${MAX_LONG_PT} pt long, ${MAX_SHORT_PT} pt short); refusing to rasterise"
+  exit 1
+fi
+
+# --- ground truth: what is actually loaded --------------------------------
+LOADED="$("$PTOUCH_LABEL" --model "$MODEL" ${PRINTER_ARGS[@]+"${PRINTER_ARGS[@]}"} --probe 2>/dev/null | tail -1 | tr -dc '0-9')"
+if [ -z "$LOADED" ]; then
+  log "ERROR: tape probe failed — refusing to print. Wake the printer and resend."
+  exit 1
+fi
+log "probed loaded tape: ${LOADED}mm"
+
+
+# --- rasterise at the printer's native resolution -------------------------
+# -r 360 matches the PT-P950NW head; -gray keeps it monochrome-friendly.
+if ! pdftoppm -r 360 -cropbox -f 1 -l 1 -gray -png -singlefile "$DOC" "$WORK/page" 2>>"$LOG"; then
+  log "ERROR: pdftoppm failed"
+  exit 1
+fi
+PNG="$WORK/page.png"
+[ -f "$PNG" ] || { log "ERROR: no raster produced"; exit 1; }
+log "rasterised -> $(python3 -c 'import sys; from PIL import Image; im=Image.open(sys.argv[1]); print("%dx%d" % im.size)' "$PNG" 2>/dev/null || echo '?')"
+
+# --- print ----------------------------------------------------------------
+# --no-probe with the width we just probed ourselves: probing twice in one job
+# wastes several seconds and can race a cassette change mid-job.
+if "$PTOUCH_LABEL" --model "$MODEL" ${PRINTER_ARGS[@]+"${PRINTER_ARGS[@]}"} \
+     --image "$PNG" --no-probe --tape "$LOADED" >>"$LOG" 2>&1; then
+  log "printed OK on ${LOADED}mm"
+else
+  log "ERROR: ptouch-label failed (exit $?)"
+  exit 1
+fi

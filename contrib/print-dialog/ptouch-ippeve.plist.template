@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for the ptouch-label print-dialog front end.
+  See docs/print-dialog.md. SECURITY: as shipped this is local-only: it is not
+  advertised (-r off) and its web forms are off (the no-web-forms flag). ippeveprinter
+  still listens on every interface, so other machines that know the address can
+  send jobs; docs/print-dialog.md covers sharing it on purpose and blocking it.
+  Replace every __PLACEHOLDER__, then:
+    cp ptouch-ippeve.plist.template ~/Library/LaunchAgents/local.ptouch-ippeve.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ptouch-ippeve.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.ptouch-ippeve</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/ippeveprinter</string>
+		<string>-r</string>
+		<string>off</string>
+		<string>--no-web-forms</string>
+		<string>-p</string>
+		<string>8631</string>
+		<string>-a</string>
+		<string>__REPO__/contrib/print-dialog/ptouch-ippeve.conf</string>
+		<string>-c</string>
+		<string>__REPO__/contrib/print-dialog/ptouch-ippeve-print</string>
+		<string>-d</string>
+		<string>__HOME__/.local/state/ptouch-ippeve/spool</string>
+		<string>Label Printer</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__HOME__/.local/bin</string>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>PTOUCH_IPPEVE_MODEL</key>
+		<string>PT-P950NW</string>
+	</dict>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/.local/state/ptouch-ippeve/stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/.local/state/ptouch-ippeve/stderr.log</string>
+	<key>ServiceDescription</key>
+	<string>IPP Everywhere front end for a Brother P-touch label printer, so any macOS app can print to it from File > Print.
+
+Runs Apple's /usr/bin/ippeveprinter on port 8631 with ptouch-ippeve.conf, which offers one paper size, "Label tape (auto-scale to loaded cartridge)", 300 x 36 mm. Each job arrives as PDF and goes to ptouch-ippeve-print, which probes the loaded tape, rasterises the page at 360 dpi with pdftoppm and prints it with ptouch-label --image, scaled to the loaded cassette.
+
+Dependencies: Homebrew poppler (pdfinfo, pdftoppm); ptouch-label on PATH, configured in ~/.config/ptouch-label/config.toml. The spool directory must exist before this starts, or every job fails and CUPS pauses the queue.
+
+Operation: launchctl bootout / bootstrap gui/$(id -u) this plist. After editing it, bootout and bootstrap; kickstart -k reuses the cached definition. Per-job log: ~/.local/state/ptouch-ippeve/ptouch-ippeve.log. Not advertised (-r off); remove -r off to let other Macs discover it.</string>
+</dict>
+</plist>
